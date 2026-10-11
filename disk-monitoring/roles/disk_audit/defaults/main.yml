@@ -1,0 +1,4 @@
+---
+report_local_dir: "{{ playbook_dir }}/../reports"
+report_upload: true
+report_s3_prefix: disk-audit

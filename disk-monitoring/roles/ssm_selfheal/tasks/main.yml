@@ -1,0 +1,27 @@
+---
+# Auto-enrollment + self-healing without Ansible in the loop:
+#   * an SSM Command document (install agent, configure if not running)
+#   * a State Manager association targeting ALL managed instances
+# State Manager applies associations to new instances as soon as they register
+# with SSM, so VMs launched tomorrow are enrolled automatically.
+- name: Self-heal | Create build directory
+  ansible.builtin.file:
+    path: "{{ selfheal_build_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Self-heal | Render the SSM document
+  ansible.builtin.template:
+    src: ensure-cwagent.json.j2
+    dest: "{{ selfheal_build_dir }}/{{ selfheal_document_name }}.json"
+    mode: "0600"
+
+- name: Self-heal | Deploy document and association to every account/region
+  ansible.builtin.include_tasks: per_target.yml
+  loop: "{{ managed_accounts | product(aws_regions) | list }}"
+  loop_control:
+    loop_var: target
+    label: "{{ target.0.id }}/{{ target.1 }}"
+  vars:
+    aws_args: [--profile, "{{ profile_prefix }}{{ target.0.id }}", --region, "{{ target.1 }}"]
+    document_file: "file://{{ selfheal_build_dir }}/{{ selfheal_document_name }}.json"

@@ -1,0 +1,21 @@
+---
+- name: Windows | Query fixed logical disks
+  ansible.windows.win_powershell:
+    script: |
+      Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Where-Object { $_.Size -gt 0 } | ForEach-Object {
+        [pscustomobject]@{
+          mount          = $_.DeviceID
+          device         = $_.VolumeName
+          fstype         = $_.FileSystem
+          size_gb        = [math]::Round($_.Size / 1GB, 2)
+          free_gb        = [math]::Round($_.FreeSpace / 1GB, 2)
+          used_pct       = [math]::Round(100 * ($_.Size - $_.FreeSpace) / $_.Size, 1)
+          inode_used_pct = 0.0
+        }
+      }
+  register: win_disks
+  changed_when: false
+
+- name: Windows | Build disk report
+  ansible.builtin.set_fact:
+    disk_report: "{{ win_disks.output }}"

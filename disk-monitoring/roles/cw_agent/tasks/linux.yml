@@ -1,0 +1,69 @@
+---
+- name: Linux | Pick the agent package for this distribution
+  ansible.builtin.set_fact:
+    cw_pkg_os: >-
+      {{ 'ubuntu' if ansible_facts['os_family'] == 'Debian'
+         else ('amazon_linux' if ansible_facts['distribution'] == 'Amazon'
+         else ('suse' if ansible_facts['os_family'] == 'Suse' else 'redhat')) }}
+    cw_pkg_ext: "{{ 'deb' if ansible_facts['os_family'] == 'Debian' else 'rpm' }}"
+    cw_pkg_arch: "{{ 'arm64' if ansible_facts['architecture'] in ['aarch64', 'arm64'] else 'amd64' }}"
+
+- name: Linux | Check whether the agent is already installed (e.g. golden AMI)
+  ansible.builtin.stat:
+    path: "{{ cw_linux_ctl }}"
+  register: cw_ctl
+
+- name: Linux | Install the CloudWatch agent
+  when: not cw_ctl.stat.exists
+  block:
+    - name: Linux | Download agent package
+      ansible.builtin.get_url:
+        url: "{{ cw_package_base_url }}/{{ cw_pkg_os }}/{{ cw_pkg_arch }}/latest/amazon-cloudwatch-agent.{{ cw_pkg_ext }}"
+        dest: "/tmp/amazon-cloudwatch-agent.{{ cw_pkg_ext }}"
+        mode: "0644"
+
+    - name: Linux | Install agent (deb)
+      when: cw_pkg_ext == 'deb'
+      ansible.builtin.apt:
+        deb: /tmp/amazon-cloudwatch-agent.deb
+
+    - name: Linux | Install agent (rpm)
+      when: cw_pkg_ext == 'rpm'
+      ansible.builtin.package:
+        name: /tmp/amazon-cloudwatch-agent.rpm
+        state: present
+  always:
+    - name: Linux | Remove downloaded package
+      ansible.builtin.file:
+        path: "/tmp/amazon-cloudwatch-agent.{{ cw_pkg_ext }}"
+        state: absent
+
+- name: Linux | Apply the disk-monitoring agent config
+  ansible.builtin.template:
+    src: cwagent-linux.json.j2
+    dest: "{{ cw_linux_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload CloudWatch agent (Linux)
+
+- name: Linux | Apply config change now
+  ansible.builtin.meta: flush_handlers
+
+- name: Linux | Ensure the agent is enabled and running
+  ansible.builtin.service:
+    name: amazon-cloudwatch-agent
+    state: started
+    enabled: true
+
+- name: Linux | Verify agent status
+  ansible.builtin.command:
+    argv: ["{{ cw_linux_ctl }}", -a, status]
+  register: cw_status
+  changed_when: false
+
+- name: Linux | Assert the agent is running
+  ansible.builtin.assert:
+    that: (cw_status.stdout | from_json).status == 'running'
+    fail_msg: "CloudWatch agent not running on {{ inventory_hostname }}: {{ cw_status.stdout }}"
+    quiet: true

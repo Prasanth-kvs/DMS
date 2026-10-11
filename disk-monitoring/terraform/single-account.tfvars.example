@@ -1,0 +1,13 @@
+# TEST ONLY - one standalone AWS account (no Organization).
+# The account is both the monitoring account and the only workload account.
+# terraform apply -var-file=single-account.tfvars
+single_account_mode = true
+primary_region      = "us-east-1"
+regions             = ["us-east-1"]
+alert_email         = "you@example.com"
+# Lets you run Ansible from your laptop instead of a control-node EC2 instance:
+# the IAM user/role your AWS CLI profile uses (aws sts get-caller-identity).
+additional_trusted_principal_arn = "arn:aws:iam::000000000000:user/your-user"
+# Set false only if a corporate TLS proxy makes S3 calls fail with SignatureDoesNotMatch;
+# then create the buckets with test/create_s3_buckets.sh after terraform apply.
+# manage_s3_buckets = false

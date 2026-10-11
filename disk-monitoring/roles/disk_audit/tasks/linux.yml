@@ -1,0 +1,25 @@
+---
+- name: Linux | Refresh mount facts
+  ansible.builtin.setup:
+    gather_subset: ['!all', '!min', hardware]
+    filter: ansible_mounts
+
+- name: Linux | Build disk report from mount facts
+  ansible.builtin.set_fact:
+    disk_report: >-
+      {%- set out = [] -%}
+      {%- set seen = [] -%}
+      {%- for m in ansible_facts['mounts'] | rejectattr('fstype', 'in', cw_ignore_fstypes) -%}
+        {%- if m.size_total | int > 0 and m.mount not in seen -%}
+          {%- set _ = seen.append(m.mount) -%}
+          {%- set inode_total = m.inode_total | default(0) | int -%}
+          {%- set _ = out.append({
+                'mount': m.mount, 'device': m.device, 'fstype': m.fstype,
+                'size_gb': ((m.size_total | int) / 1073741824) | round(2),
+                'free_gb': ((m.size_available | int) / 1073741824) | round(2),
+                'used_pct': (100 * (m.size_total - m.size_available) / m.size_total) | round(1),
+                'inode_used_pct': ((100 * (inode_total - m.inode_available | default(0) | int) / inode_total) | round(1))
+                                  if inode_total > 0 else 0.0 }) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}

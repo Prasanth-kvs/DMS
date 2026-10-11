@@ -1,0 +1,31 @@
+---
+# =====================================================================
+# 50 - ON-DEMAND AUDIT (pure-Ansible collection + aggregation)
+# Pulls live disk usage from every VM over SSM and produces one consolidated
+# CSV/HTML report (local + S3). Independent of the CloudWatch path.
+#   ansible-playbook playbooks/50_audit_disk.yml
+#   ansible-playbook playbooks/50_audit_disk.yml -l env_prod -e report_upload=false
+# =====================================================================
+- name: Collect disk usage from every VM
+  hosts: "aws_ec2:!ssm_unreachable"
+  gather_facts: true
+  strategy: free
+  ignore_unreachable: true
+  pre_tasks:
+    - name: Record which hosts this audit targeted (so --limit is respected in the report)
+      ansible.builtin.set_fact:
+        audit_targets: "{{ ansible_play_hosts_all }}"
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+  roles:
+    - disk_audit
+
+- name: Aggregate into a fleet report
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Build and publish the report
+      ansible.builtin.include_role:
+        name: disk_audit
+        tasks_from: aggregate

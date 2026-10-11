@@ -1,0 +1,8 @@
+---
+collections:
+  - name: amazon.aws        # aws_ec2 inventory, aws_ssm connection, ec2_tags hostvar, use_deprecated_tags (>=11.5), CloudWatch alarms, S3
+    version: ">=11.5.0"
+  - name: community.aws     # ssm_parameter
+    version: ">=9.0.0"
+  - name: ansible.windows
+    version: ">=2.5.0"

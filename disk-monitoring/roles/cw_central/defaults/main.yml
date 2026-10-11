@@ -1,0 +1,37 @@
+---
+# Metrics Insights alarms: ONE query watches every VM in every linked account in
+# the region. New accounts/VMs are covered the moment they start sending metrics.
+fleet_alarms:
+  - name: linux-disk-warning
+    description: "Some Linux filesystem in the fleet is >= {{ disk_warn_pct }}% full"
+    query: SELECT MAX(disk_used_percent) FROM SCHEMA(CWAgent, InstanceId, path)
+    comparison: GreaterThanOrEqualToThreshold
+    threshold: "{{ disk_warn_pct }}"
+  - name: linux-disk-critical
+    description: "Some Linux filesystem in the fleet is >= {{ disk_crit_pct }}% full"
+    query: SELECT MAX(disk_used_percent) FROM SCHEMA(CWAgent, InstanceId, path)
+    comparison: GreaterThanOrEqualToThreshold
+    threshold: "{{ disk_crit_pct }}"
+  - name: linux-inodes-low
+    description: "Some Linux filesystem has fewer than {{ inode_free_min }} free inodes"
+    query: SELECT MIN(disk_inodes_free) FROM SCHEMA(CWAgent, InstanceId, path)
+    comparison: LessThanThreshold
+    threshold: "{{ inode_free_min }}"
+  - name: windows-disk-warning
+    description: "Some Windows volume in the fleet is >= {{ disk_warn_pct }}% full"
+    query: SELECT MIN("LogicalDisk % Free Space") FROM SCHEMA(CWAgent, InstanceId, instance)
+    comparison: LessThanOrEqualToThreshold
+    threshold: "{{ 100 - disk_warn_pct | int }}"
+  - name: windows-disk-critical
+    description: "Some Windows volume in the fleet is >= {{ disk_crit_pct }}% full"
+    query: SELECT MIN("LogicalDisk % Free Space") FROM SCHEMA(CWAgent, InstanceId, instance)
+    comparison: LessThanOrEqualToThreshold
+    threshold: "{{ 100 - disk_crit_pct | int }}"
+
+alarm_levels:
+  - name: warning
+    threshold: "{{ disk_warn_pct }}"
+  - name: critical
+    threshold: "{{ disk_crit_pct }}"
+
+cw_central_build_dir: "{{ playbook_dir }}/../.build"

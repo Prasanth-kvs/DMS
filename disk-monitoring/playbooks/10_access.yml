@@ -1,0 +1,13 @@
+---
+# =====================================================================
+# 10 - ACCESS MANAGEMENT
+# Makes every discovered instance (a) reachable via SSM Session Manager and
+# (b) allowed to publish metrics, by attaching DiskMonitoringInstanceProfile or
+# adding the two AWS managed agent policies to the instance's existing role.
+# Unreachable instances are reported and placed in group `ssm_unreachable`.
+# =====================================================================
+- name: Access management - SSM reachability and agent permissions
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - instance_access

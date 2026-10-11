@@ -1,0 +1,13 @@
+---
+# Full pipeline: discover -> access -> fleet config -> enroll -> central monitoring.
+# Safe to run on a schedule (AWX/AAP or cron); every step is idempotent.
+- name: Discovery
+  ansible.builtin.import_playbook: 00_discover.yml
+- name: Access management
+  ansible.builtin.import_playbook: 10_access.yml
+- name: Fleet config and self-healing
+  ansible.builtin.import_playbook: 20_fleet_config.yml
+- name: Enrollment
+  ansible.builtin.import_playbook: 30_enroll.yml
+- name: Central monitoring
+  ansible.builtin.import_playbook: 40_central_monitoring.yml

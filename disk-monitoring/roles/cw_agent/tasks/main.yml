@@ -1,0 +1,10 @@
+---
+# Enroll a VM: install the CloudWatch agent if missing, apply the disk config,
+# make sure it runs, and verify. Idempotent - safe to run on every schedule.
+- name: Enroll Linux host
+  ansible.builtin.include_tasks: linux.yml
+  when: os_family == 'linux'
+
+- name: Enroll Windows host
+  ansible.builtin.include_tasks: windows.yml
+  when: os_family == 'windows'

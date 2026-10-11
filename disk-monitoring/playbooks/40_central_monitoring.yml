@@ -1,0 +1,17 @@
+---
+# =====================================================================
+# 40 - AGGREGATION + PRESENTATION (monitoring account)
+# Fleet-wide Metrics Insights alarms, named per-instance/mount alarms, and the
+# cross-account dashboard. Mount facts come from the fact cache when fresh.
+# =====================================================================
+- name: Gather mount facts used for per-instance alarms
+  hosts: "os_linux:!ssm_unreachable"
+  gather_facts: true
+  gather_subset: ['!all', 'hardware']
+  strategy: free
+
+- name: Central monitoring - alarms and dashboard
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - cw_central

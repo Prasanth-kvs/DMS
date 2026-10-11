@@ -1,0 +1,51 @@
+---
+# =====================================================================
+# TEST HELPER - launch (or terminate) small Amazon Linux instances to monitor.
+# Runs with your own AWS CLI credentials (AWS_PROFILE), not the monitoring roles.
+#   ansible-playbook test/launch_test_instances.yml -e @test/single-account.yml
+#   ansible-playbook test/launch_test_instances.yml -e @test/single-account.yml -e test_state=absent
+# Instances get NO instance profile on purpose: 10_access.yml must attach one.
+# They use the default VPC (public IP, outbound internet) so the SSM agent can
+# register without VPC endpoints. No inbound rules are needed.
+# =====================================================================
+- name: Test instances for disk monitoring
+  hosts: localhost
+  gather_facts: false
+  vars:
+    test_state: present                     # present | absent
+    test_instance_count: 2
+    test_instance_type: t3.micro
+    test_region: "{{ primary_region }}"
+    test_ami_parameter: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  tasks:
+    - name: Look up the latest Amazon Linux 2023 AMI
+      when: test_state == 'present'
+      ansible.builtin.set_fact:
+        test_ami: "{{ lookup('amazon.aws.ssm_parameter', test_ami_parameter, region=test_region) }}"
+
+    - name: Launch or terminate the test instances
+      amazon.aws.ec2_instance:
+        region: "{{ test_region }}"
+        state: "{{ 'running' if test_state == 'present' else 'absent' }}"
+        name: "dm-test-{{ item }}"
+        image_id: "{{ test_ami | default(omit) }}"
+        instance_type: "{{ test_instance_type }}"
+        network_interfaces:
+          - assign_public_ip: true
+        volumes:
+          - device_name: /dev/xvda
+            ebs:
+              volume_size: 8
+              volume_type: gp3
+              delete_on_termination: true
+        tags:
+          Environment: test
+          Project: disk-monitoring
+        wait: true
+      loop: "{{ range(1, test_instance_count + 1) | list }}"
+
+    - name: Next step
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Instances launched. Run: ansible-playbook playbooks/site.yml -e @test/single-account.yml'
+             if test_state == 'present' else 'Test instances terminated.' }}

@@ -1,0 +1,9 @@
+# Run Terraform with credentials for the MONITORING account; org-level resources
+# are created through org_admin_role_arn (management or StackSets delegated admin).
+primary_region     = "us-east-1"
+regions            = ["us-east-1", "us-west-2"]
+org_admin_role_arn = "arn:aws:iam::000000000000:role/TerraformOrgAdmin"
+target_ou_ids      = ["ou-abcd-11111111", "ou-abcd-22222222"]
+scp_target_ids     = ["ou-abcd-11111111", "ou-abcd-22222222"]
+alert_email        = "cloud-ops@example.com"
+# stackset_call_as = "DELEGATED_ADMIN"

@@ -1,0 +1,4 @@
+---
+# Session Manager runs PowerShell as SYSTEM on Windows - no escalation needed.
+ansible_shell_type: powershell
+ansible_become: false

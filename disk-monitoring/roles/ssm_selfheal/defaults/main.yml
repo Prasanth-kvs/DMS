@@ -1,0 +1,4 @@
+---
+selfheal_build_dir: "{{ playbook_dir }}/../.build"
+selfheal_max_concurrency: "10%"
+selfheal_max_errors: "10%"

@@ -1,0 +1,49 @@
+---
+# =====================================================================
+# DEMO - fill a filesystem past the critical threshold to prove alerting
+# end to end, then clean up.
+#   ansible-playbook playbooks/90_simulate_disk_pressure.yml -e target=i-0abc123
+#   ansible-playbook playbooks/90_simulate_disk_pressure.yml -e target=i-0abc123 -e fill_state=absent
+# =====================================================================
+- name: Simulate disk pressure on a Linux test instance
+  hosts: "{{ target | default('none') }}"
+  gather_facts: true
+  vars:
+    fill_mount: /
+    fill_to_pct: 93
+    fill_state: present
+    fill_file: "{{ (fill_mount ~ '/disk-monitoring-demo.fill') | regex_replace('/+', '/') }}"
+  tasks:
+    - name: Only run against Linux test hosts
+      ansible.builtin.assert:
+        that: os_family == 'linux'
+        fail_msg: This demo playbook supports Linux targets only.
+        quiet: true
+
+    - name: Remove the fill file (cleanup)
+      when: fill_state == 'absent'
+      ansible.builtin.file:
+        path: "{{ fill_file }}"
+        state: absent
+
+    - name: Fill the filesystem
+      when: fill_state == 'present'
+      block:
+        - name: Calculate bytes needed to reach the target utilization
+          ansible.builtin.set_fact:
+            fill_bytes: >-
+              {%- set m = ansible_facts['mounts'] | selectattr('mount', 'equalto', fill_mount) | first -%}
+              {{ ((m.size_total * (fill_to_pct | float) / 100) - (m.size_total - m.size_available)) | int }}
+
+        - name: Allocate the fill file
+          when: fill_bytes | int > 0
+          ansible.builtin.command:
+            argv: [fallocate, -l, "{{ fill_bytes }}", "{{ fill_file }}"]
+            creates: "{{ fill_file }}"
+
+        - name: Next steps
+          ansible.builtin.debug:
+            msg: >-
+              {{ fill_mount }} on {{ inventory_hostname }} should now be ~{{ fill_to_pct | float }}% used.
+              Expect disk-fleet-linux-disk-critical and the per-instance alarm within
+              ~{{ (alarm_period_seconds | int * 2) // 60 }} minutes. Clean up with -e fill_state=absent.

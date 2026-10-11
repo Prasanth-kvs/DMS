@@ -1,0 +1,77 @@
+---
+# =====================================================================
+# Disk monitoring - global settings. Edit for your org or override with -e.
+# =====================================================================
+
+# ---- Organization scope ----------------------------------------------
+# TEST ONLY: true = one standalone account monitors itself (no Organization, no
+# cross-account observability). See test/single-account.yml and the README.
+single_account_mode: false
+monitoring_account_id: "111111111111"      # hub account (CloudWatch sink, alarms, dashboards)
+primary_region: us-east-1                  # where dashboards and report buckets live
+aws_regions:                               # every region that runs workloads
+  - us-east-1
+  - us-west-2
+
+# Account discovery
+#  A) AWS Organizations - read-only role in the management account (recommended)
+org_reader_role_arn: ""                    # arn:aws:iam::<mgmt-account>:role/DiskMonitoringOrgReader
+target_ou_ids: []                          # [] = every ACTIVE account; else only these OUs (direct children)
+exclude_account_ids: []
+#  B) Static list - used only when org_reader_role_arn is empty (demo / PoC)
+static_accounts:
+  - id: "222222222222"
+    name: workload-dev
+
+# ---- Access management -----------------------------------------------
+member_role_name: DiskMonitoringAnsibleRole      # created in every member account by the StackSet
+profile_prefix: dm-                              # ~/.aws/config profile per account: dm-<account-id>
+# Base credentials for the role chain. Control node on EC2 -> instance metadata.
+# Running from a laptop instead? set aws_source_profile to a profile in the monitoring account.
+aws_credential_source: Ec2InstanceMetadata
+aws_source_profile: ""
+instance_profile_name: DiskMonitoringInstanceProfile
+# Instances that already have a role keep it; we only attach the two AWS managed
+# policies the SSM + CloudWatch agents need.
+extend_existing_instance_roles: true
+ssm_registration_wait_seconds: 90               # after attaching profiles, let SSM agents register
+
+# S3 bucket used by the aws_ssm connection plugin for file transfer (SSE-KMS, 1-day lifecycle)
+ssm_transfer_bucket: "disk-monitoring-ssm-{{ monitoring_account_id }}"
+reports_bucket: "disk-monitoring-reports-{{ monitoring_account_id }}"
+
+# ---- CloudWatch agent ------------------------------------------------
+cw_namespace: CWAgent
+cw_collection_interval: 60
+cw_param_linux: AmazonCloudWatch-disk-monitoring-linux       # prefix AmazonCloudWatch- is readable via
+cw_param_windows: AmazonCloudWatch-disk-monitoring-windows   # CloudWatchAgentServerPolicy - keep it
+# vfat = the EFI system partition (/boot/efi): tiny, only written by OS updates, and it has
+# no inodes, so it reports inodes_free = 0 and would trip the low-inode alarm on every host.
+cw_ignore_fstypes: [tmpfs, devtmpfs, overlay, squashfs, sysfs, proc, nsfs, autofs,
+                    cgroup, cgroup2, ramfs, iso9660, fuse.lxcfs, efivarfs, tracefs, vfat]
+
+# ---- Thresholds & alerting -------------------------------------------
+disk_warn_pct: 80
+disk_crit_pct: 90
+inode_free_min: 10000
+alarm_period_seconds: 300
+alerts_topic_name: disk-monitoring-alerts      # one topic per region, created by terraform/hub.tf
+dashboard_name: Disk-Utilization-Fleet
+per_instance_alarms: true                      # named alarms per host/mount (fleet alarms always on)
+# Fleet alarm scope. One Metrics Insights query reads at most 10,000 metrics, and a
+# region allows at most 200 Metrics Insights alarms.
+#   region  - one alarm per rule per region; fine up to ~10,000 / fleet_mounts_per_host_estimate VMs per region
+#   account - one alarm per rule per account (WHERE AWS.AccountId); 5 rules -> up to 40 accounts
+fleet_alarm_scope: region
+fleet_mounts_per_host_estimate: 4              # used only to warn before the 10,000-metric limit
+metrics_insights_alarm_quota: 200
+prune_stale_alarms: true                       # delete alarms of terminated instances / removed mounts
+# Blind-spot alarm: instances in scope that SSM cannot reach are not monitored.
+publish_unmanaged_metric: true
+unmanaged_metric_namespace: DiskMonitoring     # must match the PutMetricData condition in terraform/hub.tf
+unmanaged_instances_threshold: 0               # alarm when more than this many are unreachable
+
+# ---- Self-healing / auto-enrollment ----------------------------------
+selfheal_document_name: DiskMonitoring-EnsureCloudWatchAgent
+selfheal_association_name: disk-monitoring-ensure-cwagent
+selfheal_schedule: rate(1 hour)

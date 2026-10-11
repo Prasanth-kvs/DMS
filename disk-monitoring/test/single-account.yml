@@ -1,0 +1,31 @@
+---
+# =====================================================================
+# SINGLE-ACCOUNT TEST MODE - extra vars, pass with:  -e @test/single-account.yml
+# One standalone AWS account is both the monitoring account and the only
+# workload account. Everything except cross-account features is exercised:
+# discovery, role chain, SSM connection, agent enrollment, self-healing,
+# fleet + per-instance + blind-spot alarms, prune, dashboard, audit report.
+# Not covered: OAM cross-account metrics, StackSet auto-deployment, SCP,
+# Organizations account discovery.
+# =====================================================================
+single_account_mode: true
+monitoring_account_id: "000000000000"      # <- your test account (aws sts get-caller-identity)
+primary_region: us-east-1
+aws_regions: [us-east-1]                   # one region keeps the test cheap
+
+org_reader_role_arn: ""                    # no Organization: use the static list
+static_accounts:
+  - id: "000000000000"                     # <- same account
+    name: test
+
+fleet_alarm_scope: region                  # AWS.AccountId needs a monitoring account
+
+# Running from a laptop instead of a control-node EC2 instance:
+# the member-role profiles chain from this profile. Its principal must be the
+# additional_trusted_principal_arn in terraform/single-account.tfvars.
+aws_source_profile: default                # <- your AWS CLI profile
+
+# Session Manager plugin installed without sudo (user-level bundle install):
+#   ./sessionmanager-bundle/install -i ~/sessionmanagerplugin
+# The aws_ssm connection otherwise defaults to /usr/local/bin/session-manager-plugin.
+ansible_aws_ssm_plugin: "{{ lookup('env', 'HOME') }}/sessionmanagerplugin/bin/session-manager-plugin"

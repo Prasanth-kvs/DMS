@@ -1,0 +1,4 @@
+---
+# Session Manager logs in as ssm-user; escalate for packages and services.
+ansible_become: true
+ansible_become_method: sudo

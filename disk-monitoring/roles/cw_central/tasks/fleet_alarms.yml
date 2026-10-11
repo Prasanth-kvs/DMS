@@ -1,0 +1,100 @@
+---
+# Metrics Insights quotas that shape this file:
+#   - one query processes at most 10,000 metrics; anything beyond is silently ignored
+#   - at most 200 Metrics Insights alarms per region
+# fleet_alarm_scope: region  -> one alarm per rule per region (fewest alarms, < ~2,500 VMs/region)
+#                    account -> one alarm per rule per account (WHERE AWS.AccountId), so each
+#                               query only sees one account's metrics
+- name: Fleet | Check the alarm scope setting
+  ansible.builtin.assert:
+    that: fleet_alarm_scope in ['region', 'account']
+    fail_msg: "fleet_alarm_scope must be 'region' or 'account', got '{{ fleet_alarm_scope }}'"
+    quiet: true
+
+- name: Fleet | Account scope needs a cross-account monitoring account
+  ansible.builtin.assert:
+    that: not (single_account_mode | bool and fleet_alarm_scope == 'account')
+    fail_msg: AWS.AccountId only exists in a monitoring account - use fleet_alarm_scope=region in single_account_mode.
+    quiet: true
+
+- name: Fleet | Build alarm scopes
+  ansible.builtin.set_fact:
+    fleet_scopes: >-
+      {%- set out = [] -%}
+      {%- if fleet_alarm_scope == 'account' -%}
+        {%- for a in managed_accounts -%}
+          {%- set _ = out.append({'suffix': '-' ~ a.id, 'where': " WHERE AWS.AccountId = '" ~ a.id ~ "'",
+                                  'label': 'account ' ~ a.id}) -%}
+        {%- endfor -%}
+      {%- else -%}
+        {%- set _ = out.append({'suffix': '', 'where': '', 'label': 'all linked accounts'}) -%}
+      {%- endif -%}
+      {{ out }}
+
+- name: Fleet | Desired fleet alarm names (used by prune)
+  ansible.builtin.set_fact:
+    fleet_alarm_names: >-
+      {%- set out = [] -%}
+      {%- for s in fleet_scopes -%}
+        {%- for a in fleet_alarms -%}
+          {%- set _ = out.append('disk-fleet-' ~ a.name ~ s.suffix) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Fleet | Stay inside the Metrics Insights alarm quota
+  ansible.builtin.assert:
+    that: fleet_alarm_names | length <= metrics_insights_alarm_quota | int
+    fail_msg: >-
+      {{ fleet_alarm_names | length }} Metrics Insights alarms per region would exceed the
+      quota of {{ metrics_insights_alarm_quota }}. Use fleet_alarm_scope=region, trim
+      fleet_alarms, or request a quota increase.
+    quiet: true
+
+- name: Fleet | Count instances per query scope
+  ansible.builtin.set_fact:
+    fleet_scope_hosts: >-
+      {%- set counts = {} -%}
+      {%- for h in groups['aws_ec2'] | default([]) -%}
+        {%- set k = hostvars[h].aws_region ~ ('/' ~ hostvars[h].aws_account_id if fleet_alarm_scope == 'account' else '') -%}
+        {%- set _ = counts.update({k: counts.get(k, 0) + 1}) -%}
+      {%- endfor -%}
+      {{ counts }}
+
+- name: Fleet | Warn when one query could exceed the 10,000-metric limit
+  vars:
+    over_limit: >-
+      {{ fleet_scope_hosts | dict2items
+         | selectattr('value', 'gt', (10000 / (fleet_mounts_per_host_estimate | int)) | int) | list }}
+  when: over_limit | length > 0
+  ansible.builtin.debug:
+    msg: >-
+      Scopes {{ over_limit | map(attribute='key') | join(', ') }} have more than
+      {{ (10000 / (fleet_mounts_per_host_estimate | int)) | int }} instances
+      (~{{ fleet_mounts_per_host_estimate }} filesystems each), so a fleet alarm query can hit the
+      10,000-metric limit and miss filesystems. Set fleet_alarm_scope=account. Per-instance
+      alarms are not affected.
+
+- name: Fleet | Metrics Insights alarms (one per rule and scope, per region)
+  amazon.aws.cloudwatch_metric_alarm:
+    name: "disk-fleet-{{ item.2.name }}{{ item.1.suffix }}"
+    description: "{{ item.2.description }} (fleet-wide, {{ item.1.label }})"
+    region: "{{ item.0 }}"
+    state: present
+    # Built as ONE expression so period stays an int (metrics has no typed suboptions).
+    metrics: >-
+      {{ [{'id': 'q1', 'expression': item.2.query ~ item.1.where,
+           'period': alarm_period_seconds | int, 'return_data': true}] }}
+    comparison: "{{ item.2.comparison }}"
+    threshold: "{{ item.2.threshold | float }}"
+    evaluation_periods: 1
+    datapoints_to_alarm: 1
+    treat_missing_data: notBreaching
+    alarm_actions: ["arn:aws:sns:{{ item.0 }}:{{ monitoring_account_id }}:{{ alerts_topic_name }}"]
+    ok_actions: ["arn:aws:sns:{{ item.0 }}:{{ monitoring_account_id }}:{{ alerts_topic_name }}"]
+  loop: "{{ aws_regions | product(fleet_scopes, fleet_alarms) | list }}"
+  # amazon.aws cloudwatch_metric_alarm drops `Metrics` before diffing, so metric-query
+  # alarms always report changed. PutMetricAlarm is an idempotent upsert -> report ok.
+  changed_when: false
+  loop_control:
+    label: "{{ item.0 }} / disk-fleet-{{ item.2.name }}{{ item.1.suffix }}"

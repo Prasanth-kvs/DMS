@@ -1,0 +1,17 @@
+---
+# =====================================================================
+# 30 - ENROLLMENT (data collection)
+# Installs/configures the CloudWatch agent over SSM on every reachable VM,
+# including brownfield VMs from acquisitions that pre-date the golden AMI.
+#   ansible-playbook playbooks/30_enroll.yml                  # whole fleet
+#   ansible-playbook playbooks/30_enroll.yml -l acct_222222222222
+#   ansible-playbook playbooks/30_enroll.yml -l env_prod -e enroll_batch=25%
+# =====================================================================
+- name: Enroll VMs - CloudWatch agent with disk-monitoring config
+  hosts: "aws_ec2:!ssm_unreachable"
+  gather_facts: true
+  strategy: free
+  serial: "{{ enroll_batch | default('100%') }}"
+  max_fail_percentage: "{{ enroll_max_fail_pct | default(25) }}"
+  roles:
+    - cw_agent

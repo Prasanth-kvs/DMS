@@ -1,0 +1,19 @@
+---
+# =====================================================================
+# 20 - FLEET CONFIG + SELF-HEALING (scalability)
+# Publishes the agent config to Parameter Store in every account/region and
+# deploys the State Manager association that auto-enrolls new VMs and restarts
+# stopped agents - with no Ansible run needed after this.
+# =====================================================================
+- name: Publish agent config and self-healing association to every account/region
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Publish CloudWatch agent config to Parameter Store
+      ansible.builtin.include_role:
+        name: cw_agent
+        tasks_from: publish_config
+
+    - name: Deploy self-healing SSM document and association
+      ansible.builtin.include_role:
+        name: ssm_selfheal

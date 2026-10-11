@@ -1,0 +1,20 @@
+---
+# Runs on the control node. Publishes the same rendered config to Parameter Store
+# in every account/region so golden-AMI instances and the self-healing association
+# (fetch-config -c ssm:<name>) converge on the exact config Ansible applies.
+- name: Publish agent configs to Parameter Store
+  community.aws.ssm_parameter:
+    name: "{{ item.1.name }}"
+    description: "CloudWatch agent disk-monitoring config ({{ item.1.os }}) - managed by Ansible"
+    value: "{{ lookup('ansible.builtin.template', item.1.template) | from_json | to_json }}"
+    string_type: String
+    tier: Standard
+    overwrite_value: changed
+    profile: "{{ profile_prefix }}{{ item.0.0.id }}"
+    region: "{{ item.0.1 }}"
+  loop: >-
+    {{ managed_accounts | product(aws_regions) | product([
+         {'os': 'linux', 'name': cw_param_linux, 'template': 'cwagent-linux.json.j2'},
+         {'os': 'windows', 'name': cw_param_windows, 'template': 'cwagent-windows.json.j2'}]) | list }}
+  loop_control:
+    label: "{{ item.0.0.id }}/{{ item.0.1 }}/{{ item.1.name }}"

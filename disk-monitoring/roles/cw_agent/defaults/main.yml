@@ -1,0 +1,7 @@
+---
+cw_linux_ctl: /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
+cw_linux_config: /opt/aws/amazon-cloudwatch-agent/etc/disk-monitoring.json
+cw_windows_ctl: 'C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1'
+cw_windows_config: 'C:\ProgramData\Amazon\AmazonCloudWatchAgent\disk-monitoring.json'
+# Regional download endpoint - reachable through an S3 gateway endpoint from private subnets.
+cw_package_base_url: "https://amazoncloudwatch-agent-{{ aws_region }}.s3.{{ aws_region }}.amazonaws.com"

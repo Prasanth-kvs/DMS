@@ -1,0 +1,23 @@
+---
+# Everything here lives in the MONITORING account and uses the control node's own
+# credentials. Metrics stay in the member accounts; CloudWatch cross-account
+# observability (sinks: terraform/hub.tf, links: cloudformation/member-baseline.yml) lets us query and alarm on them.
+- name: Fleet-wide alarms
+  ansible.builtin.include_tasks: fleet_alarms.yml
+
+- name: Per-instance alarms
+  ansible.builtin.include_tasks: instance_alarms.yml
+  when: per_instance_alarms | bool
+
+- name: Unmanaged-instance alarm
+  ansible.builtin.include_tasks: unmanaged_alarm.yml
+  when: publish_unmanaged_metric | bool
+
+- name: Remove alarms for instances, mounts and accounts that are gone
+  ansible.builtin.include_tasks: prune_alarms.yml
+  when:
+    - prune_stale_alarms | bool
+    - groups['aws_ec2'] | default([]) | length > 0   # empty inventory = discovery problem, never prune
+
+- name: Dashboard
+  ansible.builtin.include_tasks: dashboard.yml

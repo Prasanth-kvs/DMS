@@ -1,0 +1,28 @@
+---
+# An instance Ansible cannot reach through SSM is an instance nobody is watching.
+# 10_access.yml publishes the count per region (namespace DiskMonitoring, in the
+# monitoring account); this alarm turns that blind spot into a page.
+# Short period + treat_missing_data=ignore = the alarm follows the LATEST run: each run
+# publishes one datapoint, and between runs the last state is kept. (A 1-hour Maximum
+# would keep an old "2 unreachable" alarming after a later run reported 0.)
+- name: Unmanaged | Alarm when instances are not reachable through SSM
+  amazon.aws.cloudwatch_metric_alarm:
+    name: "disk-unmanaged-instances-{{ item }}"
+    description: >-
+      {{ item }}: EC2 instances in scope that are not reachable through SSM, so disk
+      usage is NOT being collected for them. See the 10_access.yml run output for the list.
+    region: "{{ primary_region }}"
+    state: present
+    namespace: "{{ unmanaged_metric_namespace }}"
+    metric_name: SsmUnreachableInstances
+    dimensions:
+      Region: "{{ item }}"
+    statistic: Maximum
+    period: 300
+    evaluation_periods: 1
+    comparison: GreaterThanThreshold
+    threshold: "{{ unmanaged_instances_threshold | float }}"
+    treat_missing_data: ignore
+    alarm_actions: ["arn:aws:sns:{{ primary_region }}:{{ monitoring_account_id }}:{{ alerts_topic_name }}"]
+    ok_actions: ["arn:aws:sns:{{ primary_region }}:{{ monitoring_account_id }}:{{ alerts_topic_name }}"]
+  loop: "{{ aws_regions }}"

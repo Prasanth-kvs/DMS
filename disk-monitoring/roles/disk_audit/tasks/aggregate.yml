@@ -1,0 +1,64 @@
+---
+# Runs on the control node: merge every host's disk_report into one fleet report,
+# write CSV + HTML, upload to the reports bucket in the monitoring account.
+- name: Aggregate | Merge host reports
+  ansible.builtin.set_fact:
+    report_ts: "{{ now(utc=true).strftime('%Y%m%dT%H%M%SZ') }}"
+    report_rows: >-
+      {%- set out = [] -%}
+      {%- for h in groups['aws_ec2'] | default([]) -%}
+        {%- set hv = hostvars[h] -%}
+        {%- for d in hv.disk_report | default([]) -%}
+          {%- set used = d.used_pct | float -%}
+          {%- set _ = out.append({
+                'account_id': hv.aws_account_id, 'account_name': hv.aws_account_name,
+                'region': hv.aws_region, 'instance_id': h,
+                'name': (hv.ec2_tags | default({})).Name | default(''),
+                'os': hv.os_family, 'mount': d.mount, 'fstype': d.fstype,
+                'size_gb': d.size_gb | float, 'free_gb': d.free_gb | float,
+                'used_pct': used, 'inode_used_pct': d.inode_used_pct | float,
+                'status': 'CRITICAL' if used >= disk_crit_pct | float
+                          else ('WARNING' if used >= disk_warn_pct | float else 'OK') }) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out | sort(attribute='used_pct', reverse=true) }}
+
+- name: Aggregate | Hosts that were targeted but returned no data
+  ansible.builtin.set_fact:
+    report_missing: >-
+      {{ audit_targets | default(groups['aws_ec2'] | default([]))
+         | reject('in', report_rows | map(attribute='instance_id') | unique | list)
+         | list }}
+
+- name: Aggregate | Create local report directory
+  ansible.builtin.file:
+    path: "{{ report_local_dir }}"
+    state: directory
+    mode: "0750"
+
+- name: Aggregate | Write CSV and HTML reports
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ report_local_dir }}/disk-audit-{{ report_ts }}.{{ item | regex_replace('^report\\.', '') }}"
+    mode: "0640"
+  loop: [report.csv, report.html]
+
+- name: Aggregate | Upload reports to S3 (monitoring account)
+  when: report_upload | bool
+  amazon.aws.s3_object:
+    bucket: "{{ reports_bucket }}"
+    object: "{{ report_s3_prefix }}/{{ report_ts[:8] }}/disk-audit-{{ report_ts }}.{{ item }}"
+    src: "{{ report_local_dir }}/disk-audit-{{ report_ts }}.{{ item }}"
+    mode: put
+    region: "{{ primary_region }}"
+  loop: [csv, html]
+
+- name: Aggregate | Summary
+  ansible.builtin.debug:
+    msg:
+      hosts_reported: "{{ report_rows | map(attribute='instance_id') | unique | list | length }}"
+      filesystems: "{{ report_rows | length }}"
+      critical: "{{ report_rows | selectattr('status', 'equalto', 'CRITICAL') | map(attribute='instance_id') | list }}"
+      warning: "{{ report_rows | selectattr('status', 'equalto', 'WARNING') | map(attribute='instance_id') | list }}"
+      not_reporting: "{{ report_missing }}"
+      report: "{{ report_local_dir }}/disk-audit-{{ report_ts }}.html"

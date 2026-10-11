@@ -1,0 +1,21 @@
+---
+- name: Dashboard | Create build directory
+  ansible.builtin.file:
+    path: "{{ cw_central_build_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Dashboard | Render dashboard body
+  ansible.builtin.template:
+    src: dashboard.json.j2
+    dest: "{{ cw_central_build_dir }}/dashboard.json"
+    mode: "0600"
+
+- name: Dashboard | Publish to the monitoring account
+  ansible.builtin.command:
+    argv: [aws, cloudwatch, put-dashboard, --region, "{{ primary_region }}",
+           --dashboard-name, "{{ dashboard_name }}",
+           --dashboard-body, "file://{{ cw_central_build_dir }}/dashboard.json"]
+  register: dash
+  changed_when: false   # PutDashboard is an idempotent upsert
+  failed_when: dash.rc != 0 or (dash.stdout | length > 0 and (dash.stdout | from_json).DashboardValidationMessages | default([]) | length > 0)

@@ -1,0 +1,45 @@
+---
+- name: Windows | Check whether the agent is already installed (e.g. golden AMI)
+  ansible.windows.win_stat:
+    path: "{{ cw_windows_ctl }}"
+  register: cw_ctl
+
+- name: Windows | Install the CloudWatch agent
+  when: not cw_ctl.stat.exists
+  block:
+    - name: Windows | Download agent MSI
+      ansible.windows.win_get_url:
+        url: "{{ cw_package_base_url }}/windows/amd64/latest/amazon-cloudwatch-agent.msi"
+        dest: 'C:\Windows\Temp\amazon-cloudwatch-agent.msi'
+
+    - name: Windows | Install agent MSI
+      ansible.windows.win_package:
+        path: 'C:\Windows\Temp\amazon-cloudwatch-agent.msi'
+        creates_path: "{{ cw_windows_ctl }}"
+        state: present
+
+- name: Windows | Apply the disk-monitoring agent config
+  ansible.windows.win_template:
+    src: cwagent-windows.json.j2
+    dest: "{{ cw_windows_config }}"
+  notify: Reload CloudWatch agent (Windows)
+
+- name: Windows | Apply config change now
+  ansible.builtin.meta: flush_handlers
+
+- name: Windows | Ensure the agent service is automatic and running
+  ansible.windows.win_service:
+    name: AmazonCloudWatchAgent
+    start_mode: auto
+    state: started
+
+- name: Windows | Verify agent status
+  ansible.windows.win_shell: "& '{{ cw_windows_ctl }}' -a status"
+  register: cw_status
+  changed_when: false
+
+- name: Windows | Assert the agent is running
+  ansible.builtin.assert:
+    that: cw_status.stdout is search('"status"\s*:\s*"running"')
+    fail_msg: "CloudWatch agent not running on {{ inventory_hostname }}: {{ cw_status.stdout }}"
+    quiet: true

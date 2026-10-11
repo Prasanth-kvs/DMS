@@ -1,0 +1,72 @@
+---
+# Removes alarms this role created that no longer match the fleet, so terminated
+# instances do not leave INSUFFICIENT_DATA alarms (and their cost) behind.
+# Stale means:
+#   fleet alarm     - name not produced by the current fleet_alarms x fleet_alarm_scope
+#   instance alarm  - its account left the organization scope, OR
+#                     its instance is gone from an account that still returned instances, OR
+#                     the instance reported facts this run and that mount no longer exists, OR
+#                     per_instance_alarms is false
+# An account whose inventory came back empty (API error, SCP) is never pruned.
+- name: Prune | List disk alarms in each region
+  ansible.builtin.command:
+    argv: [aws, cloudwatch, describe-alarms, --region, "{{ item }}",
+           --alarm-name-prefix, "disk-", --alarm-types, MetricAlarm,
+           --query, "MetricAlarms[].AlarmName", --output, json]
+  loop: "{{ aws_regions }}"
+  register: existing_alarms
+  changed_when: false
+
+- name: Prune | Work out which alarms are stale
+  ansible.builtin.set_fact:
+    stale_alarms: >-
+      {%- set inv = groups['aws_ec2'] | default([]) -%}
+      {%- set live_accounts = inv | map('extract', hostvars, 'aws_account_id') | map('string') | unique | list -%}
+      {%- set managed = managed_accounts | map(attribute='id') | map('string') | list -%}
+      {%- set fact_hosts = alarm_targets | default([]) | map(attribute='host') | unique | list -%}
+      {%- set want_instance = instance_alarm_names | default([]) -%}
+      {%- set out = [] -%}
+      {%- for r in existing_alarms.results -%}
+        {%- for n in r.stdout | from_json -%}
+          {%- if n is match('^disk-fleet-') -%}
+            {%- if n not in fleet_alarm_names -%}
+              {%- set _ = out.append({'region': r.item, 'name': n}) -%}
+            {%- endif -%}
+          {%- elif n is match('^disk-(warning|critical)-[0-9]{12}-i-[0-9a-f]+-') -%}
+            {%- set parts = n.split('-') -%}
+            {%- set acct = parts[2] -%}
+            {%- set iid = 'i-' ~ parts[4] -%}
+            {%- if (not (per_instance_alarms | bool))
+                   or (acct not in managed)
+                   or (acct in live_accounts and iid not in inv)
+                   or (iid in fact_hosts and n not in want_instance) -%}
+              {%- set _ = out.append({'region': r.item, 'name': n}) -%}
+            {%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Prune | Report stale alarms
+  when: stale_alarms | length > 0
+  ansible.builtin.debug:
+    msg: "Deleting {{ stale_alarms | length }} stale alarm(s): {{ stale_alarms | map(attribute='name') | join(', ') }}"
+
+- name: Prune | Group stale alarms into DeleteAlarms batches (max 100 names per call)
+  ansible.builtin.set_fact:
+    stale_batches: >-
+      {%- set out = [] -%}
+      {%- for r in aws_regions -%}
+        {%- for b in stale_alarms | selectattr('region', 'eq', r) | map(attribute='name') | batch(100) -%}
+          {%- set _ = out.append({'region': r, 'names': b | list}) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Prune | Delete stale alarms
+  ansible.builtin.command:
+    argv: "{{ ['aws', 'cloudwatch', 'delete-alarms', '--region', item.region, '--alarm-names'] + item.names }}"
+  loop: "{{ stale_batches }}"
+  loop_control:
+    label: "{{ item.region }}: {{ item.names | length }} alarm(s)"
+  changed_when: true

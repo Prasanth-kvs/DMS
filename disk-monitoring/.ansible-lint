@@ -1,0 +1,13 @@
+---
+profile: production
+exclude_paths:
+  - collections/
+  - .cache/
+  - .build/
+  - cloudformation/
+  - terraform/
+  - inventory/group_vars/all/accounts.yml
+  - inventory/acct-*.aws_ec2.yml
+  - reports/
+skip_list:
+  - var-naming[no-role-prefix]   # shared, documented globals in group_vars are intentional

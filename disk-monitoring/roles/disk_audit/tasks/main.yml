@@ -1,0 +1,11 @@
+---
+# Pure-Ansible collection path: no agent, no CloudWatch. Useful as a compliance
+# snapshot, for hosts that cannot run the agent, and to prove the data pipeline
+# end to end. Each host builds a normalised `disk_report` list.
+- name: Collect from Linux
+  ansible.builtin.include_tasks: linux.yml
+  when: os_family == 'linux'
+
+- name: Collect from Windows
+  ansible.builtin.include_tasks: windows.yml
+  when: os_family == 'windows'

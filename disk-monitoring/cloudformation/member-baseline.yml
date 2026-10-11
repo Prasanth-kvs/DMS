@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Disk monitoring - MEMBER accounts. Deployed by Terraform (terraform/org.tf) as a
+  service-managed StackSet targeting
+  OUs with auto-deployment ON, so every new or acquired account is enrolled the moment
+  it joins the OU. Deploy to every workload region; IAM is created in PrimaryRegion only.
+
+Parameters:
+  MonitoringAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+  PrimaryRegion:
+    Type: String
+    Default: us-east-1
+  SinkArn:
+    Type: String
+    Default: ""
+    Description: >-
+      OAM sink ARN of the monitoring account IN THIS REGION (StackSet parameter override per
+      region). Empty = no metrics link (single-account test mode: the account monitors itself).
+  SsmTransferBucketName:
+    Type: String
+    Description: disk-monitoring-ssm-<monitoring-account-id>
+  DataKeyArn:
+    Type: String
+    Description: KMS key protecting the SSM transfer bucket (monitoring account)
+  AdditionalTrustedPrincipalArn:
+    Type: String
+    Default: ""
+    Description: Optional extra principal allowed to assume the Ansible role (e.g. a break-glass or PoC role)
+
+Conditions:
+  IsPrimary: !Equals [!Ref "AWS::Region", !Ref PrimaryRegion]
+  HasExtraPrincipal: !Not [!Equals [!Ref AdditionalTrustedPrincipalArn, ""]]
+  CreateMetricsLink: !Not [!Equals [!Ref SinkArn, ""]]
+
+Resources:
+  # ------------------------------------------------------------------
+  # Share this account's metrics with the monitoring account (per region)
+  # ------------------------------------------------------------------
+  MetricsLink:
+    Type: AWS::Oam::Link
+    Condition: CreateMetricsLink
+    Properties:
+      LabelTemplate: "$AccountName"
+      ResourceTypes: ["AWS::CloudWatch::Metric"]
+      SinkIdentifier: !Ref SinkArn
+
+  # ------------------------------------------------------------------
+  # Role assumed by the Ansible control node. Least privilege: discovery,
+  # Session Manager, agent config and the self-healing association - nothing else.
+  # ------------------------------------------------------------------
+  AnsibleExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimary
+    Properties:
+      RoleName: DiskMonitoringAnsibleRole
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !If
+                - HasExtraPrincipal
+                - [!Sub "arn:${AWS::Partition}:iam::${MonitoringAccountId}:role/DiskMonitoringControlNode", !Ref AdditionalTrustedPrincipalArn]
+                - [!Sub "arn:${AWS::Partition}:iam::${MonitoringAccountId}:role/DiskMonitoringControlNode"]
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: disk-monitoring-ansible
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Ec2Discovery
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                  - ec2:DescribeRegions
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeIamInstanceProfileAssociations
+                Resource: "*"
+              - Sid: AttachMonitoringInstanceProfile
+                Effect: Allow
+                Action: ec2:AssociateIamInstanceProfile
+                Resource: !Sub "arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:instance/*"
+              - Sid: PassOnlyTheMonitoringInstanceRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt InstanceRole.Arn
+                Condition:
+                  StringEquals: { "iam:PassedToService": ec2.amazonaws.com }
+              - Sid: ExtendExistingInstanceRolesWithAgentPoliciesOnly
+                Effect: Allow
+                Action: iam:AttachRolePolicy
+                Resource: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/*"
+                Condition:
+                  ArnEquals:
+                    iam:PolicyARN:
+                      - !Sub "arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy"
+                      - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+              - Sid: ReadInstanceRoles
+                Effect: Allow
+                Action: ["iam:GetInstanceProfile", "iam:ListAttachedRolePolicies"]
+                Resource: "*"
+              - Sid: SessionManagerStart
+                Effect: Allow
+                Action: ssm:StartSession
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:instance/*"
+                  - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:document/*"
+                  - !Sub "arn:${AWS::Partition}:ssm:*::document/*"
+              - Sid: SessionManagerOwnSessions
+                Effect: Allow
+                Action: ["ssm:TerminateSession", "ssm:ResumeSession"]
+                Resource: !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:session/*"
+              - Sid: SsmRead
+                Effect: Allow
+                Action:
+                  - ssm:DescribeInstanceInformation
+                  - ssm:DescribeSessions
+                  - ssm:GetConnectionStatus
+                  - ssm:ListAssociations
+                  - ssm:DescribeAssociation
+                  - ssm:DescribeDocument
+                  - ssm:GetDocument
+                  - ssm:ListCommandInvocations
+                  - ssm:DescribeParameters
+                Resource: "*"
+              - Sid: AgentConfigParameters
+                Effect: Allow
+                Action: ["ssm:PutParameter", "ssm:GetParameter", "ssm:GetParameters", "ssm:AddTagsToResource", "ssm:ListTagsForResource"]
+                Resource: !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/AmazonCloudWatch-disk-monitoring-*"
+              - Sid: SelfHealDocument
+                Effect: Allow
+                Action: ["ssm:CreateDocument", "ssm:UpdateDocument", "ssm:UpdateDocumentDefaultVersion", "ssm:AddTagsToResource"]
+                Resource: !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:document/DiskMonitoring-*"
+              - Sid: SelfHealAssociation
+                Effect: Allow
+                Action: ["ssm:CreateAssociation", "ssm:UpdateAssociation", "ssm:StartAssociationsOnce"]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:document/DiskMonitoring-*"
+                  - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:association/*"
+                  - !Sub "arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:instance/*"
+              - Sid: SsmTransferBucket
+                Effect: Allow
+                Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket", "s3:GetBucketLocation"]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${SsmTransferBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${SsmTransferBucketName}/*"
+              - Sid: SsmTransferKey
+                Effect: Allow
+                Action: ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"]
+                Resource: !Ref DataKeyArn
+
+  # ------------------------------------------------------------------
+  # Profile for instances that have none: exactly what the agents need.
+  # ------------------------------------------------------------------
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Condition: IsPrimary
+    Properties:
+      RoleName: DiskMonitoringInstanceRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/CloudWatchAgentServerPolicy"
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: IsPrimary
+    Properties:
+      InstanceProfileName: DiskMonitoringInstanceProfile
+      Roles: [!Ref InstanceRole]
+
+Outputs:
+  MetricsLinkArn:
+    Condition: CreateMetricsLink
+    Value: !GetAtt MetricsLink.Arn

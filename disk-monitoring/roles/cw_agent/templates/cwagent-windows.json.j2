@@ -1,0 +1,17 @@
+{{ {
+  "agent": {
+    "metrics_collection_interval": cw_collection_interval | int,
+    "omit_hostname": true
+  },
+  "metrics": {
+    "namespace": cw_namespace,
+    "append_dimensions": {"InstanceId": "${aws:InstanceId}"},
+    "aggregation_dimensions": [["InstanceId", "instance"]],
+    "metrics_collected": {
+      "LogicalDisk": {
+        "measurement": ["% Free Space"],
+        "resources": ["*"]
+      }
+    }
+  }
+} | to_nice_json(indent=2) }}

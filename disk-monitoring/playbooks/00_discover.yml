@@ -1,0 +1,143 @@
+---
+# =====================================================================
+# 00 - DISCOVERY (scalability + access management)
+#
+# Lists accounts from AWS Organizations (or a static list), then for each
+# account renders:
+#   * an AWS CLI/boto profile that assumes DiskMonitoringAnsibleRole
+#     (short-lived STS credentials, no access keys anywhere)
+#   * a dynamic inventory source  inventory/acct-<id>.aws_ec2.yml
+# New accounts are picked up on the next run; closed accounts are removed.
+# =====================================================================
+- name: Discover AWS accounts and generate per-account EC2 inventory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    aws_config_path: "{{ lookup('env', 'AWS_CONFIG_FILE') | default(lookup('env', 'HOME') ~ '/.aws/config', true) }}"
+    inventory_path: "{{ (playbook_dir ~ '/../inventory') | realpath }}"
+    base_credentials: >-
+      {{ ('source_profile = ' ~ aws_source_profile) if aws_source_profile | length > 0
+         else ('credential_source = ' ~ aws_credential_source) }}
+  tasks:
+    - name: Organizations | Render the org-reader profile
+      when: org_reader_role_arn | length > 0
+      ansible.builtin.blockinfile:
+        path: "{{ aws_config_path }}"
+        create: true
+        mode: "0600"
+        marker: "# {mark} disk-monitoring org reader (managed by Ansible)"
+        block: |
+          [profile {{ profile_prefix }}org-reader]
+          role_arn = {{ org_reader_role_arn }}
+          {{ base_credentials }}
+          role_session_name = ansible-disk-monitoring-discovery
+
+    - name: Organizations | Discover accounts
+      when: org_reader_role_arn | length > 0
+      block:
+        - name: Organizations | List every account
+          when: target_ou_ids | length == 0
+          ansible.builtin.command:
+            argv: [aws, organizations, list-accounts, --profile, "{{ profile_prefix }}org-reader", --output, json]
+          register: org_all
+          changed_when: false
+
+        - name: Organizations | List accounts in the target OUs
+          when: target_ou_ids | length > 0
+          ansible.builtin.command:
+            argv: [aws, organizations, list-accounts-for-parent, --parent-id, "{{ item }}",
+                   --profile, "{{ profile_prefix }}org-reader", --output, json]
+          loop: "{{ target_ou_ids }}"
+          register: org_ous
+          changed_when: false
+
+        - name: Organizations | Keep ACTIVE, non-excluded accounts
+          ansible.builtin.set_fact:
+            discovered_accounts: >-
+              {%- set raw = [] -%}
+              {%- if target_ou_ids | length == 0 -%}
+                {%- set _ = raw.extend((org_all.stdout | from_json).Accounts) -%}
+              {%- else -%}
+                {%- for r in org_ous.results -%}
+                  {%- set _ = raw.extend((r.stdout | from_json).Accounts) -%}
+                {%- endfor -%}
+              {%- endif -%}
+              {%- set seen = [] -%}
+              {%- set out = [] -%}
+              {%- for a in raw -%}
+                {%- set state = a.State | default(a.Status | default('ACTIVE')) -%}
+                {%- if state == 'ACTIVE' and a.Id not in exclude_account_ids and a.Id not in seen -%}
+                  {%- set _ = seen.append(a.Id) -%}
+                  {%- set _ = out.append({'id': a.Id, 'name': a.Name}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ out }}
+
+    - name: Select the account list for this run
+      # Not cacheable: later runs read inventory/group_vars/all/accounts.yml (written below).
+      ansible.builtin.set_fact:
+        managed_accounts: >-
+          {%- set src = discovered_accounts if org_reader_role_arn | length > 0 else static_accounts -%}
+          {%- set out = [] -%}
+          {%- for a in src -%}
+            {%- set _ = out.append({'id': a.id | string, 'name': a.name | default(a.id | string)}) -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Fail when there is nothing to manage
+      ansible.builtin.assert:
+        that: managed_accounts | length > 0
+        fail_msg: No accounts found - check org_reader_role_arn / target_ou_ids or static_accounts.
+        quiet: true
+
+    - name: Access | Render one assume-role profile per member account
+      ansible.builtin.blockinfile:
+        path: "{{ aws_config_path }}"
+        create: true
+        mode: "0600"
+        marker: "# {mark} disk-monitoring member accounts (managed by Ansible)"
+        block: "{{ lookup('ansible.builtin.template', 'aws_profiles.j2') }}"
+
+    - name: Inventory | Render one dynamic inventory source per account
+      ansible.builtin.template:
+        src: aws_ec2.yml.j2
+        dest: "{{ inventory_path }}/acct-{{ account.id }}.aws_ec2.yml"
+        mode: "0644"
+      loop: "{{ managed_accounts }}"
+      loop_control:
+        loop_var: account
+        label: "{{ account.id }} ({{ account.name }})"
+
+    - name: Inventory | Find existing inventory sources
+      ansible.builtin.find:
+        paths: "{{ inventory_path }}"
+        patterns: "acct-*.aws_ec2.yml"
+      register: existing_sources
+
+    - name: Inventory | Remove sources for accounts that left the org / scope
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: >-
+        {{ existing_sources.files | map(attribute='path')
+           | reject('in', managed_accounts | map(attribute='id')
+                          | map('regex_replace', '^(.*)$', inventory_path ~ '/acct-\1.aws_ec2.yml') | list)
+           | list }}
+
+    - name: Inventory | Persist the account list for later playbooks
+      ansible.builtin.copy:
+        dest: "{{ inventory_path }}/group_vars/all/accounts.yml"
+        mode: "0644"
+        content: |
+          ---
+          # Generated by playbooks/00_discover.yml
+          {{ {'managed_accounts': managed_accounts} | to_nice_yaml(indent=2) }}
+
+    - name: Reload inventory so the new EC2 sources are used immediately
+      ansible.builtin.meta: refresh_inventory
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ managed_accounts | length }} account(s) x {{ aws_regions | length }} region(s);
+          {{ groups['aws_ec2'] | default([]) | length }} running instance(s) discovered.

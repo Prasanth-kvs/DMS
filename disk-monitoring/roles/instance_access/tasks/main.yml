@@ -1,0 +1,80 @@
+---
+# Runs on the control node only. Every AWS call uses the per-account profile,
+# i.e. a short-lived STS session of DiskMonitoringAnsibleRole in that account.
+- name: Make sure at least one instance was discovered
+  ansible.builtin.assert:
+    that: groups['aws_ec2'] | default([]) | length > 0
+    fail_msg: No EC2 instances in inventory - run playbooks/00_discover.yml first.
+    quiet: true
+
+- name: Give every instance the permissions the SSM and CloudWatch agents need
+  ansible.builtin.include_tasks: instance.yml
+  loop: "{{ groups['aws_ec2'] }}"
+  loop_control:
+    loop_var: iid
+    label: "{{ iid }}"
+  vars:
+    h: "{{ hostvars[iid] }}"
+    aws_profile: "{{ profile_prefix }}{{ hostvars[iid].aws_account_id }}"
+
+- name: Give newly attached profiles time to reach the SSM agent
+  when: access_changed | default(false)
+  ansible.builtin.pause:
+    seconds: "{{ ssm_registration_wait_seconds }}"
+
+- name: List SSM-managed (Online) instances per account and region
+  ansible.builtin.command:
+    argv: [aws, ssm, describe-instance-information,
+           --profile, "{{ profile_prefix }}{{ item.0.id }}", --region, "{{ item.1 }}",
+           --query, "InstanceInformationList[?PingStatus=='Online'].InstanceId", --output, json]
+  loop: "{{ managed_accounts | product(aws_regions) | list }}"
+  loop_control:
+    label: "{{ item.0.id }}/{{ item.1 }}"
+  register: ssm_online
+  changed_when: false
+  failed_when: false   # one broken account/region must not stop the whole fleet
+
+- name: Warn about account/regions whose SSM inventory could not be read
+  when: ssm_online.results | selectattr('rc', 'ne', 0) | list | length > 0
+  ansible.builtin.debug:
+    msg: >-
+      SSM lookup failed for
+      {% for r in ssm_online.results if r.rc != 0 %}{{ r.item.0.id }}/{{ r.item.1 }}{{ ', ' if not loop.last }}{% endfor %}
+      - instances there are treated as unreachable.
+      Check region opt-in, SCPs and the member role. stderr: {{ ssm_online.results
+      | selectattr('rc', 'ne', 0) | map(attribute='stderr') | map('trim') | first | truncate(200) }}
+
+- name: Work out which instances are not reachable through SSM
+  ansible.builtin.set_fact:
+    ssm_unreachable_ids: >-
+      {{ groups['aws_ec2'] | difference(ssm_online.results | selectattr('rc', 'eq', 0)
+                                        | map(attribute='stdout') | map('from_json') | flatten) }}
+
+- name: Put unreachable instances in the ssm_unreachable group (skipped by later plays)
+  ansible.builtin.add_host:
+    name: "{{ item }}"
+    groups: ssm_unreachable
+  loop: "{{ ssm_unreachable_ids }}"
+  changed_when: false
+
+- name: Publish the unreachable-instance count per region (alarmed on by 40_central_monitoring)
+  when: publish_unmanaged_metric | bool
+  ansible.builtin.command:
+    argv: [aws, cloudwatch, put-metric-data, --region, "{{ primary_region }}",
+           --namespace, "{{ unmanaged_metric_namespace }}",
+           --metric-data, "{{ [{'MetricName': 'SsmUnreachableInstances', 'Unit': 'Count',
+                                'Dimensions': [{'Name': 'Region', 'Value': item}],
+                                'Value': ssm_unreachable_ids | map('extract', hostvars, 'aws_region')
+                                         | select('eq', item) | list | length}] | to_json }}"]
+  loop: "{{ aws_regions }}"
+  changed_when: false
+
+- name: Report access status
+  ansible.builtin.debug:
+    msg:
+      reachable: "{{ groups['aws_ec2'] | length - ssm_unreachable_ids | length }}"
+      unreachable: "{{ ssm_unreachable_ids }}"
+      hint: >-
+        Unreachable usually means: SSM agent missing (old AMI), no route to the
+        ssm / ssmmessages / ec2messages endpoints, or the agent has not yet picked up
+        its new role. Fix those and re-run; nothing else in the pipeline changes.

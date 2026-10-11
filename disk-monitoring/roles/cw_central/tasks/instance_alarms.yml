@@ -1,0 +1,64 @@
+---
+# Named alarms per instance and mount point so the page says WHICH host and path.
+# Built from the mount facts gathered from each Linux host. Cross-account metric
+# reference via account_id - the alarm lives in the monitoring account.
+- name: Instance | Build alarm targets from gathered mount facts
+  ansible.builtin.set_fact:
+    alarm_targets: >-
+      {%- set out = [] -%}
+      {%- for h in (groups['os_linux'] | default([])) | difference(groups['ssm_unreachable'] | default([])) -%}
+        {%- set hv = hostvars[h] -%}
+        {%- if hv.ansible_facts is defined and hv.ansible_facts.mounts is defined -%}
+          {%- for m in hv.ansible_facts.mounts | rejectattr('fstype', 'in', cw_ignore_fstypes)
+                                             | map(attribute='mount') | unique -%}
+            {%- set _ = out.append({'host': h, 'name': (hv.ec2_tags | default({})).Name | default(h),
+                                    'account': hv.aws_account_id, 'region': hv.aws_region,
+                                    'path': m,
+                                    'slug': m | regex_replace('[^A-Za-z0-9]+', '_') | regex_replace('^_$', 'root')}) -%}
+          {%- endfor -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Instance | Desired per-instance alarm names (used by prune)
+  ansible.builtin.set_fact:
+    instance_alarm_names: >-
+      {%- set out = [] -%}
+      {%- for t in alarm_targets -%}
+        {%- for l in alarm_levels -%}
+          {%- set _ = out.append('disk-' ~ l.name ~ '-' ~ t.account ~ '-' ~ t.host ~ '-' ~ t.slug) -%}
+        {%- endfor -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Instance | Warning and critical alarm per instance/mount
+  amazon.aws.cloudwatch_metric_alarm:
+    name: "disk-{{ item.1.name }}-{{ item.0.account }}-{{ item.0.host }}-{{ item.0.slug }}"
+    description: >-
+      {{ item.0.name }} ({{ item.0.host }}, account {{ item.0.account }}): {{ item.0.path }}
+      >= {{ item.1.threshold }}% used
+    region: "{{ item.0.region }}"
+    state: present
+    # Built as ONE expression so period stays an int (metrics has no typed suboptions).
+    # account_id only for metrics in OTHER accounts (none in single-account test mode).
+    metrics: >-
+      {{ [{'id': 'm1', 'return_data': true,
+           'metric_stat': {'period': alarm_period_seconds | int, 'stat': 'Maximum',
+             'metric': {'namespace': cw_namespace, 'metric_name': 'disk_used_percent',
+               'dimensions': [{'name': 'InstanceId', 'value': item.0.host},
+                              {'name': 'path', 'value': item.0.path}]}}}
+          | combine({} if (item.0.account | string) == (monitoring_account_id | string)
+                    else {'account_id': item.0.account | string})] }}
+    comparison: GreaterThanOrEqualToThreshold
+    threshold: "{{ item.1.threshold | float }}"
+    evaluation_periods: 2
+    datapoints_to_alarm: 2
+    treat_missing_data: missing
+    alarm_actions: ["arn:aws:sns:{{ item.0.region }}:{{ monitoring_account_id }}:{{ alerts_topic_name }}"]
+    ok_actions: ["arn:aws:sns:{{ item.0.region }}:{{ monitoring_account_id }}:{{ alerts_topic_name }}"]
+  loop: "{{ alarm_targets | product(alarm_levels) | list }}"
+  # amazon.aws cloudwatch_metric_alarm drops `Metrics` before diffing, so metric-query
+  # alarms always report changed. PutMetricAlarm is an idempotent upsert -> report ok.
+  changed_when: false
+  loop_control:
+    label: "{{ item.0.host }}:{{ item.0.path }} ({{ item.1.name }})"

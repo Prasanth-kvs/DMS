@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Disk audit {{ report_ts }}</title>
+<style>
+ body{font-family:system-ui,sans-serif;margin:2rem;color:#1f2933}
+ table{border-collapse:collapse;width:100%;font-size:14px}
+ th,td{padding:6px 10px;border-bottom:1px solid #e4e7eb;text-align:left}
+ th{background:#f5f7fa}
+ .CRITICAL{background:#fde8e8}.WARNING{background:#fff4e5}
+ .bar{background:#e4e7eb;height:8px;border-radius:4px;width:120px}
+ .bar span{display:block;height:8px;border-radius:4px}
+ .sum span{display:inline-block;margin-right:1.5rem}
+</style></head><body>
+<h1>Disk utilization audit</h1>
+<p class="sum">
+ <span>Generated: <b>{{ report_ts }}</b></span>
+ <span>Hosts: <b>{{ report_rows | map(attribute='instance_id') | unique | list | length }}</b></span>
+ <span>Critical: <b>{{ report_rows | selectattr('status','equalto','CRITICAL') | list | length }}</b></span>
+ <span>Warning: <b>{{ report_rows | selectattr('status','equalto','WARNING') | list | length }}</b></span>
+ <span>Not reporting: <b>{{ report_missing | length }}</b></span>
+</p>
+<table>
+<tr><th>Status</th><th>Account</th><th>Region</th><th>Instance</th><th>Name</th><th>OS</th><th>Mount</th><th>Size (GB)</th><th>Free (GB)</th><th>Used</th><th>Inodes used</th></tr>
+{% for r in report_rows %}
+{% set colour = '#d62728' if r.status == 'CRITICAL' else ('#ff7f0e' if r.status == 'WARNING' else '#2ca02c') %}
+<tr class="{{ r.status }}"><td>{{ r.status }}</td><td>{{ r.account_name | e }} ({{ r.account_id }})</td><td>{{ r.region }}</td>
+<td>{{ r.instance_id }}</td><td>{{ r.name | e }}</td><td>{{ r.os }}</td><td>{{ r.mount | e }}</td><td>{{ r.size_gb }}</td><td>{{ r.free_gb }}</td>
+<td><div class="bar"><span style="width:{{ r.used_pct }}%;background:{{ colour }}"></span></div>{{ r.used_pct }}%</td><td>{{ r.inode_used_pct }}%</td></tr>
+{% endfor %}
+</table>
+{% if report_missing %}<h2>Not reporting</h2><p>{{ report_missing | join(', ') }}</p>{% endif %}
+</body></html>

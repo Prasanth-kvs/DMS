@@ -1,0 +1,67 @@
+{#- Fleet dashboard in the monitoring account. Every query is cross-account
+    (AWS.AccountId is available because of the OAM sink), one row per region.
+    single_account_mode: no OAM sink, so no AWS.AccountId label - group by instance instead. -#}
+{%- set by_acct = '' if single_account_mode | bool else 'AWS.AccountId, ' -%}
+{%- set ns = namespace(y=0) -%}
+{%- set widgets = [] -%}
+{%- set _ = widgets.append({
+  "type": "text", "x": 0, "y": 0, "width": 24, "height": 2,
+  "properties": {"markdown":
+    "# Disk utilization - " ~ ("single-account test" if single_account_mode | bool else "all accounts") ~ "\n" ~
+    "Warning **" ~ disk_warn_pct ~ "%** / Critical **" ~ disk_crit_pct ~ "%**. " ~
+    "Data: CloudWatch agent (`" ~ cw_namespace ~ "`) " ~
+    ("in this account. " if single_account_mode | bool else "via cross-account observability. ") ~
+    "Enrollment: Ansible + SSM State Manager (`" ~ selfheal_association_name ~ "`)."}
+}) -%}
+{%- set ns.y = 2 -%}
+{%- set alarm_arns = [] -%}
+{%- for region in aws_regions -%}
+  {%- for n in fleet_alarm_names -%}
+    {%- set _ = alarm_arns.append('arn:aws:cloudwatch:' ~ region ~ ':' ~ monitoring_account_id ~ ':alarm:' ~ n) -%}
+  {%- endfor -%}
+  {%- if publish_unmanaged_metric | bool -%}
+    {%- set _ = alarm_arns.append('arn:aws:cloudwatch:' ~ primary_region ~ ':' ~ monitoring_account_id ~ ':alarm:disk-unmanaged-instances-' ~ region) -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set _ = widgets.append({
+  "type": "alarm", "x": 0, "y": ns.y, "width": 24, "height": 3,
+  "properties": {"title": "Fleet alarm status", "alarms": alarm_arns, "sortBy": "stateUpdatedTimestamp"}
+}) -%}
+{%- set ns.y = ns.y + 3 -%}
+{%- for region in aws_regions -%}
+  {%- set _ = widgets.extend([
+    {"type": "metric", "x": 0, "y": ns.y, "width": 12, "height": 7,
+     "properties": {
+       "title": region ~ " - Top 20 fullest Linux filesystems (%)",
+       "region": region, "view": "bar", "period": 300, "stat": "Maximum",
+       "metrics": [[{"id": "q1", "label": "",
+         "expression": "SELECT MAX(disk_used_percent) FROM SCHEMA(CWAgent, InstanceId, path) GROUP BY " ~ by_acct ~ "InstanceId, path ORDER BY MAX() DESC LIMIT 20"}]],
+       "yAxis": {"left": {"min": 0, "max": 100}},
+       "annotations": {"horizontal": [
+         {"label": "critical", "value": disk_crit_pct | float, "color": "#d62728"},
+         {"label": "warning", "value": disk_warn_pct | float, "color": "#ff7f0e"}]}}},
+    {"type": "metric", "x": 12, "y": ns.y, "width": 12, "height": 7,
+     "properties": {
+       "title": region ~ " - Top 20 fullest Windows volumes (% free, lowest first)",
+       "region": region, "view": "bar", "period": 300, "stat": "Minimum",
+       "metrics": [[{"id": "q2", "label": "",
+         "expression": "SELECT MIN(\"LogicalDisk % Free Space\") FROM SCHEMA(CWAgent, InstanceId, instance) GROUP BY " ~ by_acct ~ "InstanceId, instance ORDER BY MIN() ASC LIMIT 20"}]],
+       "yAxis": {"left": {"min": 0, "max": 100}}}},
+    {"type": "metric", "x": 0, "y": ns.y + 7, "width": 12, "height": 6,
+     "properties": {
+       "title": region ~ " - Fleet max disk used % (trend)",
+       "region": region, "view": "timeSeries", "period": 300, "stat": "Maximum",
+       "metrics": [[{"id": "q3", "label": "max used %",
+         "expression": "SELECT MAX(disk_used_percent) FROM SCHEMA(CWAgent, InstanceId, path)"}]],
+       "yAxis": {"left": {"min": 0, "max": 100}}}},
+    {"type": "metric", "x": 12, "y": ns.y + 7, "width": 12, "height": 6,
+     "properties": {
+       "title": region ~ (" - Disk used % by instance (max)" if single_account_mode | bool else " - Disk used % by account (max)"),
+       "region": region, "view": "timeSeries", "period": 300, "stat": "Maximum",
+       "metrics": [[{"id": "q4", "label": "",
+         "expression": "SELECT MAX(disk_used_percent) FROM SCHEMA(CWAgent, InstanceId, path) GROUP BY " ~ ("InstanceId" if single_account_mode | bool else "AWS.AccountId")}]],
+       "yAxis": {"left": {"min": 0, "max": 100}}}}
+  ]) -%}
+  {%- set ns.y = ns.y + 13 -%}
+{%- endfor -%}
+{{ {"widgets": widgets} | to_nice_json(indent=2) }}

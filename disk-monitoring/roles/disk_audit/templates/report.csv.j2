@@ -1,0 +1,4 @@
+account_id,account_name,region,instance_id,name,os,mount,fstype,size_gb,free_gb,used_pct,inode_used_pct,status
+{% for r in report_rows %}
+{{ [r.account_id, r.account_name, r.region, r.instance_id, r.name, r.os, r.mount, r.fstype, r.size_gb, r.free_gb, r.used_pct, r.inode_used_pct, r.status] | map('string') | map('regex_replace', '"', '""') | map('regex_replace', '^(.*)$', '"\\1"') | join(',') }}
+{% endfor %}

@@ -1,0 +1,22 @@
+{#- Single source of truth for the Linux agent config. Rendered to a file by Ansible
+    and published to Parameter Store for golden AMIs / the self-healing association. -#}
+{{ {
+  "agent": {
+    "metrics_collection_interval": cw_collection_interval | int,
+    "run_as_user": "cwagent",
+    "omit_hostname": true
+  },
+  "metrics": {
+    "namespace": cw_namespace,
+    "append_dimensions": {"InstanceId": "${aws:InstanceId}"},
+    "aggregation_dimensions": [["InstanceId", "path"]],
+    "metrics_collected": {
+      "disk": {
+        "measurement": ["used_percent", "inodes_free"],
+        "resources": ["*"],
+        "ignore_file_system_types": cw_ignore_fstypes,
+        "drop_device": true
+      }
+    }
+  }
+} | to_nice_json(indent=2) }}

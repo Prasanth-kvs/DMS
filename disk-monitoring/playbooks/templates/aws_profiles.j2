@@ -1,0 +1,12 @@
+{% for account in managed_accounts %}
+[profile {{ profile_prefix }}{{ account.id }}]
+role_arn = arn:aws:iam::{{ account.id }}:role/{{ member_role_name }}
+{% if aws_source_profile | length > 0 %}
+source_profile = {{ aws_source_profile }}
+{% else %}
+credential_source = {{ aws_credential_source }}
+{% endif %}
+role_session_name = ansible-disk-monitoring
+duration_seconds = 3600
+
+{% endfor %}

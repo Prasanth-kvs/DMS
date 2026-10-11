@@ -1,0 +1,45 @@
+{#- SSM Command document: install the agent if missing, and (re)configure it from
+    Parameter Store only when it is not running. Running agents are left alone,
+    so the hourly schedule never causes metric gaps. -#}
+{% set linux_script %}
+CTL=/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
+if "$CTL" -a status | grep -Eq '"status": *"running"'; then
+  echo "CloudWatch agent already running - nothing to do"
+else
+  echo "CloudWatch agent not running - applying ssm:{{ cw_param_linux }}"
+  "$CTL" -a fetch-config -m ec2 -s -c ssm:{{ cw_param_linux }}
+fi
+{% endset %}
+{% set windows_script %}
+$ctl = "$env:ProgramFiles\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1"
+$status = (& $ctl -a status | Out-String)
+if ($status -match '"status"\s*:\s*"running"') {
+  "CloudWatch agent already running - nothing to do"
+} else {
+  "CloudWatch agent not running - applying ssm:{{ cw_param_windows }}"
+  & $ctl -a fetch-config -m ec2 -s -c ssm:{{ cw_param_windows }}
+}
+{% endset %}
+{{ {
+  "schemaVersion": "2.2",
+  "description": "Disk monitoring: ensure the CloudWatch agent is installed, configured and running.",
+  "mainSteps": [
+    {
+      "action": "aws:configurePackage",
+      "name": "InstallCloudWatchAgent",
+      "inputs": {"name": "AmazonCloudWatchAgent", "action": "Install"}
+    },
+    {
+      "action": "aws:runShellScript",
+      "name": "ConfigureLinux",
+      "precondition": {"StringEquals": ["platformType", "Linux"]},
+      "inputs": {"runCommand": [linux_script | trim]}
+    },
+    {
+      "action": "aws:runPowerShellScript",
+      "name": "ConfigureWindows",
+      "precondition": {"StringEquals": ["platformType", "Windows"]},
+      "inputs": {"runCommand": [windows_script | trim]}
+    }
+  ]
+} | to_nice_json(indent=2) }}

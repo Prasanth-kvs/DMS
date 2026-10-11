@@ -1,0 +1,61 @@
+---
+- name: "Look up the document | {{ target.0.id ~ '/' ~ target.1 }}"
+  ansible.builtin.command:
+    argv: "{{ ['aws', 'ssm', 'describe-document', '--name', selfheal_document_name] + aws_args }}"
+  register: doc_lookup
+  changed_when: false
+  failed_when: doc_lookup.rc != 0 and 'InvalidDocument' not in doc_lookup.stderr
+
+- name: "Create the document | {{ target.0.id ~ '/' ~ target.1 }}"
+  when: doc_lookup.rc != 0
+  ansible.builtin.command:
+    argv: >-
+      {{ ['aws', 'ssm', 'create-document', '--name', selfheal_document_name,
+          '--document-type', 'Command', '--document-format', 'JSON',
+          '--content', document_file,
+          '--tags', 'Key=ManagedBy,Value=disk-monitoring'] + aws_args }}
+  changed_when: true
+
+- name: "Update the document if content changed | {{ target.0.id ~ '/' ~ target.1 }}"
+  when: doc_lookup.rc == 0
+  ansible.builtin.command:
+    argv: >-
+      {{ ['aws', 'ssm', 'update-document', '--name', selfheal_document_name,
+          '--document-version', '$LATEST', '--document-format', 'JSON',
+          '--content', document_file, '--output', 'json'] + aws_args }}
+  register: doc_update
+  changed_when: doc_update.rc == 0
+  failed_when: doc_update.rc != 0 and 'DuplicateDocumentContent' not in doc_update.stderr
+
+- name: "Promote the new version to default | {{ target.0.id ~ '/' ~ target.1 }}"
+  when: doc_update is changed  # noqa: no-handler - needs the version from this exact result
+  ansible.builtin.command:
+    argv: >-
+      {{ ['aws', 'ssm', 'update-document-default-version', '--name', selfheal_document_name,
+          '--document-version', (doc_update.stdout | from_json).DocumentDescription.DocumentVersion]
+         + aws_args }}
+  changed_when: true
+
+- name: "Look up the association | {{ target.0.id ~ '/' ~ target.1 }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ ['aws', 'ssm', 'list-associations',
+          '--association-filter-list', 'key=AssociationName,value=' ~ selfheal_association_name,
+          '--query', 'Associations[0].AssociationId', '--output', 'text'] + aws_args }}
+  register: assoc_lookup
+  changed_when: false
+
+# The association always runs the document's $DEFAULT version, so document
+# updates roll out without touching the association.
+- name: "Create the association (all managed instances) | {{ target.0.id ~ '/' ~ target.1 }}"
+  when: assoc_lookup.stdout | trim in ['None', '']
+  ansible.builtin.command:
+    argv: >-
+      {{ ['aws', 'ssm', 'create-association', '--name', selfheal_document_name,
+          '--association-name', selfheal_association_name,
+          '--targets', 'Key=InstanceIds,Values=*',
+          '--schedule-expression', selfheal_schedule,
+          '--max-concurrency', selfheal_max_concurrency,
+          '--max-errors', selfheal_max_errors,
+          '--compliance-severity', 'HIGH'] + aws_args }}
+  changed_when: true
