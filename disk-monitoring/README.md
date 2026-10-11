@@ -280,15 +280,6 @@ ansible-playbook playbooks/90_simulate_disk_pressure.yml -e @test/single-account
 ansible-playbook test/launch_test_instances.yml -e @test/single-account.yml -e test_state=absent
 cd terraform && terraform destroy -var-file=single-account.tfvars
 ```
-**Behind a corporate TLS-inspecting proxy?** If Terraform fails on S3 with
-`SignatureDoesNotMatch` (or a bare `403` on `HeadBucket`) while the AWS CLI works, the proxy is
-rewriting a header the Go SDK signs for S3 (`Accept-Encoding`). Set `manage_s3_buckets = false`
-in `single-account.tfvars`, run `terraform apply`, then `test/create_s3_buckets.sh`, which
-creates both buckets with the same encryption, lifecycle, policy and public-access settings.
-Ansible uses boto3, which does not sign that header, so it should not be affected.
-
-Cost for a one-day test: a few dollars (two `t3.micro`, a few dozen metrics and alarms,
-prorated hourly). The reports bucket is versioned; empty it before `terraform destroy`.
 
 ---
 
